@@ -1,0 +1,154 @@
+---
+title: "Impact of Transmission Type on Gas Mileage"
+author: "L. v. Buchholtz"
+date: "April 8, 2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE)
+```
+
+
+## Synopsis
+
+Using motion sensor data from work-out devices in a manually tagged data set that describes the quality of the exercise, we fitted a number of machine learning models on the training data. Cross-validation was used to choose the best model and estimate the accuracy of the models. The best model turned out to be a Random Forest model trained on the raw data. The quality of performed exercises was predicted from a test set of 20 observations.
+
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+
+## Loading libraries
+
+
+```{r load librarys, warning = F}
+library(caret)
+library(randomForest)
+```
+
+
+## Data Loading and Processing
+
+First, we load the training and testing sets, convert the 'classe' variable to a factor variable and remove the first 7 columns which contain irrelevant metadata information.
+
+```{r load data, cache = TRUE}
+training <- read.csv('pml-training.csv')
+testing <- read.csv('pml-testing.csv')
+training$classe <- factor(training$classe)
+training <- training [,8:160]
+```
+
+We then remove columns with near zero variances and columns that contain NA's (since columns either contain no NAs or nearly all values are NAs).
+
+```{r clean data, cache = TRUE}
+nzv <- nearZeroVar(training)
+training <- training[,-nzv]
+training <- training[,colSums(is.na(training)) == 0]
+dim(training)
+```
+
+So we are left with 52 predictor variables and the outcome variable 'classe'.
+We then partition our training set into a true training set and a validation set.
+
+```{r partition validation set, cache = TRUE}
+set.seed(4321)
+inTrain <- createDataPartition(training$classe,p = 0.75,list= F)
+validating <- training[-inTrain,]
+trainingtrue <- training [inTrain,] 
+```
+
+
+## Modeling by Gradient Boosting Machine
+
+We run a gradient boosting machine machine learning algorithm, with 5-fold cross-validation. 
+
+```{r gradient boosting machine, cache = T, message = F, warning = F}
+set.seed(4321)
+fitControl <- trainControl(method = "cv", number = 5)
+garbage <- capture.output(fit_gbm_raw <- train(classe ~ .,data=trainingtrue,method = 'gbm',trControl = fitControl))
+```
+
+The best of the resulting models has an accuracy of ~96%. We confirm this on our independent data set.
+
+```{r validate gbm, echo = F, message = F}
+garbage <- capture.output(predvalidgbm <- predict(fit_gbm_raw,validating[,-53]))
+acc1 <- round(confusionMatrix(validating$classe,predvalidgbm)$overall['Accuracy']*100,1)
+oos1 <- 100 - acc1
+```
+
+The accuracy with this method is `r acc1`%. The out-of-sample error is `r oos1`%.
+
+
+## Random Forest Modeling with Principal Component Preprocessing
+
+
+On the computer used, Random Forest Modeling with the caret train() function resulted in prohibitively long computing times. One possible workaround is to use Principal Component Analysis for dimensionality reduction. In a preprocessing step, we first perform a Box Cox transformation to reduce skewdness, center and scale the data and do a Principal Component Analysis with the default threshold of explaining 95% of the variation.
+We then build a Random Forest model with 10-fold cross-validation.
+
+```{r random forest pca, cache = T}
+set.seed(4321)
+prePCA <- preProcess(trainingtrue[-53],method = c('BoxCox','center','scale','pca'))
+trainingPC <- predict(prePCA,trainingtrue[-53])
+trainingPC['classe'] <- trainingtrue$classe
+fitControl2 <- trainControl(method = "cv", number = 5)
+fit_rf_pc <- train(classe ~ .,data=trainingPC,method = 'rf',trControl = fitControl2)
+```
+
+25 principal components were required to explain 95% of the training sets variance. Cross-validation within our training set, yields an accuracy of 97.5%. Since our preprocessing procedure was not part of the cross-validation during the training, we validate our model on an independent data set.
+
+```{r validate rf pca, cache = T}
+validatingPC <- predict(prePCA,validating[-53])
+predvalidrf <- predict(fit_rf_pc,validatingPC)
+acc2 <- round(confusionMatrix(validating$classe,predvalidrf)$overall['Accuracy'] *100,1)
+oos2 <- 100 - acc1
+```
+
+The accuracy with this method is `r acc2`%. The out-of-sample error is `r oos2`%.
+
+## Random Forest Modeling on Raw data.
+
+Another way to reduce computing times of Random Forest models is to use the randomForest package directly rather than the caret wrapper. 
+
+```{r random forest raw data, cache = T}
+set.seed(4321)
+fit_rf_raw <- randomForest(classe ~ .,data=trainingtrue,ntree=100, importance=TRUE)
+plot(fit_rf_raw)
+```
+
+The error rate decreases rapidly with the number of trees in this model. From about 30 trees onward the (in-sample) prediction error stabilizes.
+We then validate the resulting model on our validation set.
+
+```{r validate rf raw, cache = T}
+
+predvalidrf2 <- predict(fit_rf_raw,validating)
+acc3 <- round(confusionMatrix(validating$classe,predvalidrf2)$overall['Accuracy']*100,1)
+oos3 <- 100 - acc3
+```
+
+The accuracy with this method is `r acc3`%. The out-of-sample error is `r oos3`%.
+This model should therefore be well suited to predict 20 test observations correctly.
+
+
+## Prediction of Test Set
+
+We choose the Random Forest Model trained on the unprocessed raw data to predict our test set because it has the smallest out-of-sample error.
+
+
+```{r test with gbm, echo = F}
+testingshort <- testing[,names(training)[-53]]
+predtest <- predict(fit_rf_raw,testingshort)
+print(predtest)
+
+```
+
+
+
+## Conclusion
+
+Among the machine learning methods tested in this project, a Random Forest Model trained on all the available raw data performed best in predicting the validation set and was successful in correctly predicting the test set.
+
+
